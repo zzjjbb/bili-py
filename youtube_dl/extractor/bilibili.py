@@ -33,8 +33,7 @@ class BiliBiliIE(InfoExtractor):
                                 video/[aA][vV]|
                                 anime/(?P<anime_id>\d+)/play\#
                             )(?P<id_bv>\d+)|
-                            video/[bB][vV](?P<id>[^/?#&]+)|
-                            bangumi/play/ep(?P<anime_ep_id>\d+)
+                            video/[bB][vV](?P<id>[^/?#&]+)
                         )
                     '''
 
@@ -125,23 +124,11 @@ class BiliBiliIE(InfoExtractor):
         url, smuggled_data = unsmuggle_url(url, {})
 
         mobj = re.match(self._VALID_URL, url)
-        video_id = mobj.group('id') or mobj.group('id_bv') or mobj.group('anime_ep_id')
+        video_id = mobj.group('id') or mobj.group('id_bv')
         anime_id = mobj.group('anime_id')
         webpage = self._download_webpage(url, video_id)
 
-        if 'bangumi/play' in url:
-            js = self._download_json(
-                'http://api.bilibili.com/pgc/view/web/season', video_id,
-                query={'ep_id': video_id})
-            if js['code'] != 0:
-                self._report_error(js)
-            for episode in js['result']['episodes']:
-                if str(episode['id']) == video_id:
-                    cid = episode['cid']
-                    break
-            else:
-                self._report_error({})
-        elif 'anime/' not in url:
+        if 'anime/' not in url:
             cid = self._search_regex(
                 r'\bcid(?:["\']:|=)(\d+)', webpage, 'cid',
                 default=None
