@@ -1,10 +1,12 @@
-from other import bv2av
+from .other import bv2av
 import requests
 import json
+
 
 class Comment:
     CANCEL_UPVOTE = 0
     DO_UPVOTE = 1
+
     def __init__(self, doc_id, **kwargs):
         if doc_id[:2].upper() == 'BV':
             self.type = 1
@@ -37,20 +39,20 @@ class Comment:
     def send(self, message):
         url = "http://api.bilibili.com/x/v2/reply/add"
         params = {
-            'type': self.type,
-            'oid':  self.oid,
+            'type':    self.type,
+            'oid':     self.oid,
             'message': str(message),
-            'csrf': self.cookies.get('bili_jct', None)
+            'csrf':    self.cookies.get('bili_jct', None)
         }
         requests.post(url, params)
 
     def upvote(self, rpid, action=DO_UPVOTE):
         url = "http://api.bilibili.com/x/v2/reply/action"
         params = {
-            'type': self.type,
-            'oid':  self.oid,
-            'rpid': rpid,
+            'type':   self.type,
+            'oid':    self.oid,
+            'rpid':   rpid,
             'action': action,
-            'csrf': self.cookies.get('bili_jct', None)
+            'csrf':   self.cookies.get('bili_jct', None)
         }
         requests.post(url, params)
