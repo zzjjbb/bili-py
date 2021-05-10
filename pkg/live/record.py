@@ -1,5 +1,6 @@
 from copy import deepcopy
 from itertools import chain, count
+import json
 import requests
 from ..other.exceptions import APIError
 
@@ -115,31 +116,3 @@ class URLList:
     def __getitem__(self, item):
         self.get_data()
         return self._urls[item]
-
-
-if __name__ == '__main__':
-    name = input("A-SOUL name:")
-    import json
-
-    with open("note.json") as f:
-        note = json.load(f)
-    rec = RecList(note[name]['roomid']).get_page(1)[0]
-    if input("Title: " + rec['title'] + ' (y/N)').lower() == 'y':
-        rid = rec['rid']
-        dm = []
-        for i, new_dm in enumerate(Danmaku(rid)):
-            dm.extend(new_dm['dm_info'])
-            print(f'Finish getting index {i}, current length {len(dm)}')
-        print(f'Reach the end')
-        with open(rid + '.json', 'w') as f:
-            json.dump(dm, f)
-        if input("Download with aria2? (y/N)").lower() == 'y':
-            import aria2p
-
-            aria2 = aria2p.API(aria2p.Client(
-                **note['aria2']
-            ))
-            for url in URLList(rid):
-                aria2.add(url['url'])
-    else:
-        print("Aborted.")
