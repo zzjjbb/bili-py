@@ -29,8 +29,9 @@ import xml.dom.minidom
 if sys.version_info < (3,):
     raise RuntimeError('at least Python 3.0 is required')
 
-gettext.install('danmaku2ass', os.path.join(os.path.dirname(os.path.abspath(os.path.realpath(sys.argv[0] or 'locale'))), 'locale'))
+# gettext.install('danmaku2ass', os.path.join(os.path.dirname(os.path.abspath(os.path.realpath(sys.argv[0] or 'locale'))), 'locale'))
 
+_ = lambda x: x
 
 def SeekZero(function):
     def decorated_function(file_):
@@ -56,6 +57,9 @@ def EOFAsNone(function):
 def ProbeCommentFormat(f):
     tmp = f.read(1)
     if tmp == '[':
+        tmp = f.read(2000)
+        if '"medal":' in tmp:
+            return 'BiliLiveRec'
         return 'Acfun'
         # It is unwise to wrap a JSON object in an array!
         # See this: http://haacked.com/archive/2008/11/20/anatomy-of-a-subtle-json-vulnerability.aspx/
@@ -196,6 +200,21 @@ def ReadCommentsBilibili(f, fontsize):
             continue
 
 
+def ReadCommentsBiliLiveRec(f, fontsize):
+    comment_element = json.load(f)
+    for i, comment in enumerate(comment_element):
+        try:
+            time = comment['ts'] / 1000
+            ts = comment['check_info']['ts'] / 1000
+            c = comment['text']
+            size = comment['dm_fontsize'] * fontsize / 25.0
+            mode = {1: 0, 4: 2, 5: 1, 6: 3}[comment['dm_mode']]
+            yield time, ts, i, c, mode, comment['dm_color'], size, size, CalculateLength(c) * size
+        except (AttributeError, ValueError, KeyError):
+            logging.warning(_('Invalid comment: %s') % comment.toxml())
+            continue
+
+
 def ReadCommentsBilibili2(f, fontsize):
     dom = xml.dom.minidom.parse(f)
     comment_element = dom.getElementsByTagName('d')
@@ -270,7 +289,7 @@ def ReadCommentsMioMio(f, fontsize):
             continue
 
 
-CommentFormatMap = {'Niconico': ReadCommentsNiconico, 'Acfun': ReadCommentsAcfun, 'Bilibili': ReadCommentsBilibili, 'Bilibili2': ReadCommentsBilibili2, 'Tudou': ReadCommentsTudou, 'Tudou2': ReadCommentsTudou2, 'MioMio': ReadCommentsMioMio}
+CommentFormatMap = {'Niconico': ReadCommentsNiconico, 'Acfun': ReadCommentsAcfun, 'Bilibili': ReadCommentsBilibili, 'Bilibili2': ReadCommentsBilibili2, 'Tudou': ReadCommentsTudou, 'Tudou2': ReadCommentsTudou2, 'MioMio': ReadCommentsMioMio, 'BiliLiveRec': ReadCommentsBiliLiveRec}
 
 
 def WriteCommentBilibiliPositioned(f, c, width, height, styleid):
@@ -562,7 +581,7 @@ def ProcessComments(comments, f, width, height, bottomReserved, fontface, fontsi
                     WriteComment(f, i, row, width, height, bottomReserved, fontsize, duration_marquee, duration_still, styleid)
                     break
                 else:
-                    row += freerows or 1
+                    row += freerows or 2
             else:
                 if not reduced:
                     row = FindAlternativeRow(rows, i, height, bottomReserved)
