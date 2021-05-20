@@ -35,8 +35,10 @@ class RecList:
 
     def __init__(self, room_id, page_size=20):
         self.room_id = room_id
-        # self._page = 0
         self._page_size = page_size
+        self.flush()
+
+    def flush(self):
         self._count = None
         self._cache = {}
 

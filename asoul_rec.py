@@ -25,7 +25,7 @@ def select(pages):
         print('\n'.join([
             f"[{datetime.utcfromtimestamp(i['start_timestamp'] + UTC_OFFSET).strftime('%Y/%m/%d')}] "
             f"{i['rid']}  {i['title']}" for i in pages[p] if i]))
-        c = input(f"Page {p + 1}/{len(pages)}  Select item/Next/Prev/Quit (1-{PAGE_SIZE}/n/p/Q)").lower()
+        c = input(f"Page {p + 1}/{len(pages)}  Select item/Next/Prev/Quit (1-{PAGE_SIZE}/n/p/r/Q)").lower()
         try:
             num = int(c)
             item = pages[p][num - 1]
@@ -38,6 +38,8 @@ def select(pages):
                 p = min(p + 1, len(pages) - 1)
             elif c == 'p':
                 p = max(p - 1, 0)
+            elif c == 'r':
+                return None
             else:
                 abort()
     return item
@@ -53,6 +55,9 @@ if __name__ == '__main__':
     while True:
         # Param of `select` is pages (example p_size=5): [(rec0-rec4), (rec5-rec9),... (..., None)]
         rec = select(list(zip_longest(*([iter(rec_list)] * PAGE_SIZE), fillvalue=None)))
+        if rec is None:  # Refresh list
+            rec_list.flush()
+            continue
         title, rid = rec['title'], rec['rid']
         if confirm(f"RID: {rid}, Title: {title}"):
             break
