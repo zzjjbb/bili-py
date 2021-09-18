@@ -1,9 +1,11 @@
+#!/usr/bin/env python3
 import json
 import os.path
 import sys
 from hashlib import md5
 from io import BytesIO
 import av
+import time
 
 
 def check_av_stream(container):
@@ -19,10 +21,20 @@ def check_av_stream(container):
         raise ValueError(f'cannot process streams: {stream_types}')
 
 
+def print_refresh(*args, **kwargs):
+    if print_refresh.time + 0.5 < time.time():
+        print(*args, **kwargs, end='\r')
+        print_refresh.time = time.time()
+
+
+print_refresh.time = time.time()
+
+
 def get_hash(video_name):
     def close_last_segment():
-        nonlocal segment_md5_containers
+        nonlocal segment_md5_containers, max_pts
         if segment_md5_containers is not None:
+            keyframe_info[-1]['max_pts'] = max_pts
             keyframe_info[-1]['frames'] = {}
             for s in ['audio', 'video']:
                 keyframe_info[-1]['frames'][s] = segment_md5_containers[s].streams[0].frames
@@ -32,6 +44,8 @@ def get_hash(video_name):
     segment_md5_buffer = {'audio': BytesIO(), 'video': BytesIO()}
     segment_md5_containers = None
     keyframe_info = []
+    max_pts = -1000000
+    # collect = {'dts': [], 'pts': [], 'dur': []}
 
     with av.open(video_name, metadata_errors='ignore') as input_:
         check_av_stream(input_)
@@ -44,10 +58,15 @@ def get_hash(video_name):
                 continue
             # print(packet)
 
-            if packet.stream.type == 'video' and packet.is_keyframe:
-                print(f"packet {i}, time {float(packet.pts * packet.time_base):.3f}s", end='\r')
-                close_last_segment()
-                keyframe_info.append({'pts': packet.pts, 'md5': md5(packet).hexdigest()})
+            if packet.stream.type == 'video':
+                if packet.is_keyframe:
+                    print_refresh(f"packet {i}, time {float(packet.pts * packet.time_base):.3f}s" )
+                    close_last_segment()
+                    keyframe_info.append({'pts': packet.pts, 'md5': md5(packet).hexdigest()})
+                max_pts = max(max_pts, packet.pts)
+                # collect['pts'].append(packet.pts)
+                # collect['dts'].append(packet.dts)
+                # collect['dur'].append(packet.duration)
 
             if segment_md5_containers is None:
                 segment_md5_containers = {}
@@ -69,6 +88,7 @@ def get_hash(video_name):
     for seg_idx in range(len(keyframe_info)):
         out.append({
             'start_pts':    keyframe_info[seg_idx]['pts'],
+            'end_pts':      keyframe_info[seg_idx]['max_pts'],
             'frames':       keyframe_info[seg_idx]['frames'],
             'keyframe_md5': keyframe_info[seg_idx]['md5'],
             'segment_md5':  segment_md5[seg_idx]
@@ -82,7 +102,9 @@ base_dir = sys.argv[1]
 out_path = sys.argv[2]
 
 all_info = []
-for vid_name in os.listdir(base_dir):
+vid_names = os.listdir(base_dir)
+vid_names.sort()
+for vid_name in vid_names:
     if vid_name[-3:] in ['flv', 'mp4']:
         all_info.append(get_hash(os.path.join(base_dir, vid_name)))
 with open(out_path, 'w') as f:
