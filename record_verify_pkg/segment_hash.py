@@ -22,12 +22,9 @@ def check_av_stream(container):
 
 
 def print_refresh(*args, **kwargs):
-    if print_refresh.time + 0.5 < time.time():
+    if getattr(print_refresh, 'time', 0) + 0.5 < time.time():
         print(*args, **kwargs, end='\r')
         print_refresh.time = time.time()
-
-
-print_refresh.time = time.time()
 
 
 def get_hash(video_name):
@@ -60,7 +57,7 @@ def get_hash(video_name):
 
             if packet.stream.type == 'video':
                 if packet.is_keyframe:
-                    print_refresh(f"packet {i}, time {float(packet.pts * packet.time_base):.3f}s" )
+                    print_refresh(f"packet {i}, time {float(packet.pts * packet.time_base):.3f}s")
                     close_last_segment()
                     keyframe_info.append({'pts': packet.pts, 'md5': md5(packet).hexdigest()})
                 max_pts = max(max_pts, packet.pts)
@@ -76,7 +73,7 @@ def get_hash(video_name):
             packet.stream = segment_md5_containers[packet.stream.type].streams[0]
             segment_md5_containers[packet.stream.type].mux(packet)
         close_last_segment()
-    print(f"{os.path.basename(video_name)} finished")
+    print(' ' * 79 + '\r' + f"{os.path.basename(video_name)} finished")
 
     # post-processing
     # convert BytesIO to md5 values list and reformat to list of dicts

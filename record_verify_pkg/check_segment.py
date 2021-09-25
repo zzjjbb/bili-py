@@ -3,13 +3,34 @@ from difflib import SequenceMatcher
 from collections import namedtuple
 
 
-class Segment(namedtuple('Segment', ['start_pts', 'end_pts', 'frames', 'keyframe_md5', 'segment_md5'])):
+class HashCheckDifference(Exception):
     pass
+
+
+class Segment(namedtuple('Segment',
+                         ['keyframe_md5', 'segment_md5', 'start_pts', 'end_pts', 'frames', 'time_base'],
+                         defaults=(None,) * 4)):
+    start: float
+    end: float
+    start_str: str
+    end_str: str
+
+    _mm_ss_format = staticmethod(lambda x: "{:>02d}:{:>06.3f}".format(int(x) // 60, x % 60))
+
+    def __getattr__(self, item):
+        if item in ['start', 'end']:
+            for check_field in [item + '_pts', 'time_base']:
+                if getattr(self, check_field) is None:
+                    raise AttributeError(f"cannot get attribute '{item}' with unknown '{check_field}'")
+            return getattr(self, item + '_pts') * self.time_base['video']
+        elif item in ['start_str', 'end_str']:
+            return self._mm_ss_format(getattr(self, item[:-4]))
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute {item}")
 
 
 class Part(list):
     def __init__(self, info):
-        super().__init__(Segment(**seg) for seg in info['data'])
+        super().__init__(Segment(time_base=info['time_base'], **seg) for seg in info['data'])
         self.name = info['name']
         self.time_base = info['time_base']
 
@@ -20,23 +41,27 @@ class SubPart:
         self.start = start
         self.end = end
 
-    @property
-    def name(self):
-        return self.part.name
+    name = property(lambda self: self.part.name)
+    time_base = property(lambda self: self.part.time_base)
 
     @property
     def time_range(self):
-        tb = self.part.time_base['video']
-        mm_ss = lambda x: "{:>02d}:{:>06.3f}".format(int(x)//60, x%60)
-        start = mm_ss(self[0].start_pts * tb)
-        end = mm_ss(self[-1].end_pts * tb)
-        return {'start': start, 'end': end}
+        return self[0].start, self[-1].end
+
+    @property
+    def duration(self):
+        return (self[0].start_pts * self[-1].end_pts) * self.part.time_base['video']
+
+    def __len__(self):
+        return len(range(len(self.part))[self.start:self.end])
 
     def __getitem__(self, item):
         return self.part[self.start:self.end][item]
 
     def __repr__(self):
-        data = {'name': self.name, 'time': self.time_range, 'slice': slice(self.start, self.end)}
+        data = {'name':       self.name,
+                'time_range': (self[0].start_str, self[-1].end_str),
+                'slice':      slice(self.start, self.end)}
         return f"{type(self).__name__}({data.__repr__()[1:-1]})"
 
 
@@ -44,13 +69,22 @@ class ConnectedPart(list):
     pass
 
 
-def best_segment(seg_list):
-    return seg_list[0]
-
-
-def convert_time(seqs, segment_range):
-    for long_seg in segment_range:
-        pass
+def check_subpart(sp_list):
+    from collections import Counter
+    err_array = bytearray(len(sp_list))
+    seg_num = len(sp_list[0])
+    for seg_i in range(seg_num):
+        for t in ['video', 'audio']:
+            tally = Counter([part_i[seg_i].segment_md5[t] for part_i in sp_list]).most_common()
+            if len(tally) > 1:
+                if seg_i == seg_num - 1:
+                    pass  # todo: mark as error
+                else:
+                    raise HashCheckDifference(
+                        f"{t} check error at {sp_list[0][seg_i].start_str}"
+                    )
+    # max(enumerate(sp_list), key=lambda x:x[1])
+    # return sp_list[0]
 
 
 def check_single(hash_seqs, key):
