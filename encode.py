@@ -1,14 +1,20 @@
+#!/usr/bin/env python3
 import av
 import sys
 import os
 import logging
+import time
 from fractions import Fraction
-import numpy as np
 
-logging.basicConfig(format='%(asctime)s [%(levelname).1s] %(message)s', level=logging.INFO)
+logging.basicConfig(format='%(asctime)s [%(levelname).1s] %(message)s', level=logging.DEBUG)
 logging.getLogger('libav').setLevel(logging.INFO)
 
-audio_frames = []
+
+def logging_refresh(*args, __refresh_interval=1, **kwargs):
+    if getattr(logging_refresh, 'time', 0) + __refresh_interval < time.time():
+        logging.log(*args, **kwargs)
+        logging_refresh.time = time.time()
+
 
 class Transcoder:
     def __init__(self, containers, infos):
@@ -17,15 +23,18 @@ class Transcoder:
         self.infos = infos
         self.decoders = {}
         self._input_info = {'time_base': {'video': None, 'audio': None}, 'pts_offset': {'video': 0, 'audio': 0}}
-        self.dummy_packet = {'video': None, 'audio': None}
+        self.dummy_packet = {}
 
-    def set_stream(self, template):
+    def init_with_template(self, template):
+        t_v = template.streams.video[0]
+        t_a = template.streams.audio[0]
+        t_s = {'video': t_v, 'audio': t_a}
+
+        # set stream for output containers
         for container, info in zip(self.containers, self.infos):
             if info.get('streams', False):  # complain if any content have been set in info['streams']
                 raise NotImplementedError('not support reset stream after initialized')
             info['streams'] = {}
-            t_v = template.streams.video[0]
-            t_a = template.streams.audio[0]
             if info['mode'] == 'origin':
                 info['streams']['video'] = container.add_stream(template=t_v)
                 info['streams']['audio'] = container.add_stream(template=t_a)
@@ -80,18 +89,20 @@ class Transcoder:
                 info['streams']['video'] = out_v
                 info['frame_count'] = {'audio': 0}
 
+        for s in ['video', 'audio']:
+            # use only one continuous decoder to avoid concatenating problems (e.g. eliminate AAC priming samples)
+            decoder = t_s[s].codec_context.codec.create()
+            decoder.extradata = t_s[s].codec_context.extradata
+            self.decoders[s] = decoder
+            # make dummy packets (used for flush decoder to yield proper time_base)
+            packet = av.Packet()
+            packet.time_base = t_s[s].time_base
+            self.dummy_packet[s] = packet
+
     def append(self, in_vid):
         with av.open(in_vid, metadata_errors='ignore') as input_:
             if self.infos[0].get('streams', None) is None:  # should be either all None or all not None
-                self.set_stream(input_)
-            if self.decoders.get('audio', None) is None:
-                decoder = input_.streams.audio[0].codec_context.codec.create()
-                decoder.extradata = input_.streams.audio[0].codec_context.extradata
-                self.decoders['audio'] = decoder
-            if self.decoders.get('video', None) is None:
-                decoder = input_.streams.video[0].codec_context.codec.create()
-                decoder.extradata = input_.streams.video[0].codec_context.extradata
-                self.decoders['video'] = decoder
+                self.init_with_template(input_)
             streams_in = {}
             offset = {}
             for s in ['video', 'audio']:
@@ -103,27 +114,23 @@ class Transcoder:
                     raise ValueError(f"video '{in_vid}' has different time base with previous ones!")
 
             pts_max = {'video': 0, 'audio': 0}
+            total_time = float(input_.duration / av.time_base)
             for i, packet in enumerate(input_.demux()):
+                if packet.dts is None:
+                    continue  # dummy packages are useless for our custom decoders
+                progress_time = float(max(0, packet.dts * packet.time_base))
+                logging_refresh(logging.DEBUG, f"progress={progress_time / total_time * 100:.1f}% "
+                                              f"time={progress_time:.1f}s/{total_time:.1f}s")
+                s = packet.stream.type
                 # reset packet info
-                if packet.pts is not None:
-                    s = packet.stream.type
-                    packet.pts += offset[s]
-                    packet.dts += offset[s]
-                    pts_max[s] = max(pts_max[s], packet.pts + packet.duration)
-
-                if packet.stream.type == 'audio':
-                    if packet.dts is None:
-                        packet.stream = None
-                        self.dummy_packet['audio'] = packet
-                        continue
-                    frames = self.decoders['audio'].decode(packet)
-                else:
-                    if packet.dts is None:
-                        packet.stream = None
-                        self.dummy_packet['video'] = packet
-                        continue
-                    frames = self.decoders['video'].decode(packet)
+                packet.pts += offset[s]
+                packet.dts += offset[s]
+                pts_max[s] = max(pts_max[s], packet.pts + packet.duration)
+                # decode by custom decoders
+                frames = self.decoders[s].decode(packet)
+                # encode & mux
                 for container, info in zip(self.containers, self.infos):
+                    # CAUTION: recheck before modifying packet/frames information, they may be reused in other mode
                     if packet.stream.type == 'video':
                         if info['mode'] == 'origin':
                             if packet.dts is not None:
@@ -141,58 +148,46 @@ class Transcoder:
                                 container.mux(packet)
                         elif info['mode'] == 'compact':
                             for frame in frames:
-                                audio_frames.append(frame.to_ndarray())
                                 frame.pts = None
                                 new_packet = info['streams']['audio'].encode(frame)
                                 for p in new_packet:
                                     p.time_base = Fraction(1, info['streams']['audio'].sample_rate)
                                     p.pts = p.dts = info['frame_count']['audio']
                                     info['frame_count']['audio'] += p.duration
-
                                 container.mux(new_packet)
-            for s in ['video', 'audio']:
-                self._input_info['pts_offset'][s] = pts_max[s]
+
+        self._input_info['pts_offset'] = pts_max  # save pts info for next input
 
     def flush_close(self):
-        v_frames = self.decoders['video'].decode(self.dummy_packet['video'])
-        a_frames = self.decoders['audio'].decode(self.dummy_packet['audio'])
-        self.decoders['video'].close()
-        self.decoders['audio'].close()
+        frames = {}
+        for s in ['video', 'audio']:
+            frames[s] = self.decoders[s].decode(self.dummy_packet[s])
+            frames[s].append(None)  # to flush encoder
+            self.decoders[s].close()
         for container, info in zip(self.containers, self.infos):
             if info['mode'] in ['hq', 'compact']:
-                for frame in v_frames:
-                    frame.pict_type = 0
+                for frame in frames['video']:
+                    if frame is not None:
+                        frame.pict_type = 0
                     new_packet = info['streams']['video'].encode(frame)
                     container.mux(new_packet)
-                new_packet = info['streams']['video'].encode()
-                container.mux(new_packet)
             if info['mode'] == 'compact':
-                for frame in a_frames:
-                    audio_frames.append(frame.to_ndarray())
-                    frame.pts = None
+                for frame in frames['audio']:
+                    if frame is not None:
+                        frame.pts = None
                     new_packet = info['streams']['audio'].encode(frame)
                     for p in new_packet:
                         p.time_base = Fraction(1, info['streams']['audio'].sample_rate)
                         p.pts = p.dts = info['frame_count']['audio']
                         info['frame_count']['audio'] += p.duration
-
                     container.mux(new_packet)
-                new_packet = info['streams']['audio'].encode()
-                for p in new_packet:
-                    p.time_base = Fraction(1, info['streams']['audio'].sample_rate)
-                    p.pts = p.dts = info['frame_count']['audio']
-                    info['frame_count']['audio'] += p.duration
-
-                container.mux(new_packet)
             container.close()
 
 
 in_dir = sys.argv[1]
 out_dir = sys.argv[2]
-
 vid_names = os.listdir(in_dir)
 vid_names.sort(reverse=False)
-
 out_list = [av.open(os.path.join(out_dir, name), mode='w') for name in ['origin.mp4', 'hq.mp4', 'compact.webm']]
 out_info = [{'mode': m} for m in ['origin', 'hq', 'compact']]
 
@@ -200,6 +195,7 @@ transcoder = Transcoder(out_list, out_info)
 
 for vid_name in vid_names:
     if vid_name[-3:] in ['flv', 'mp4']:
+        logging.info(f"start processing '{vid_name}'")
         transcoder.append(os.path.join(in_dir, vid_name))
 
 transcoder.flush_close()
