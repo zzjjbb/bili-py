@@ -5,6 +5,9 @@ import os
 import logging
 import time
 from fractions import Fraction
+from queue import Queue
+import threading
+from abc import ABC, abstractmethod
 
 logging.basicConfig(format='%(asctime)s [%(levelname).1s] %(message)s', level=logging.DEBUG)
 logging.getLogger('libav').setLevel(logging.INFO)
@@ -14,6 +17,69 @@ def logging_refresh(*args, __refresh_interval=1, **kwargs):
     if getattr(logging_refresh, 'time', 0) + __refresh_interval < time.time():
         logging.log(*args, **kwargs)
         logging_refresh.time = time.time()
+
+
+class AsyncStream(ABC):
+    """
+    Designed for encode in a separate thread for very slow encoders
+    """
+    stream = None
+    container = None
+    _queue = None
+
+    def __init__(self, stream, maxsize=1000):
+        self.stream = stream
+        self.container = stream.container
+        self._thread = threading.Thread(target=self.run)
+        self._queue = Queue(maxsize)
+        self._thread.start()
+
+    def put(self, frame_info):
+        self._queue.put(frame_info)
+        if frame_info[0] is None:
+            self._thread.join()
+
+    @abstractmethod
+    def _encode(self, frame_info):
+        ...
+
+    def run(self):
+        while True:
+            frame_info = self._queue.get()
+            self._encode(frame_info)
+            if frame_info[0] is None:
+                break
+
+
+class HQVideo(AsyncStream):
+    def _encode(self, frame_info):
+        frame, lock = frame_info
+        with lock:
+            new_packet = self.stream.encode(frame)
+        self.container.mux(new_packet)
+
+
+class CompactVideo(AsyncStream):
+    _restart_every = float('inf')
+
+    def __init__(self, *args, restart_every=0, **kwargs):
+        if restart_every > 0:
+            self._restart_every = restart_every
+        self._frame_count = self._restart_every
+        super().__init__(*args, **kwargs)
+
+    def _encode(self, frame_info):
+        self._frame_count -= 1
+        frame, lock = frame_info
+        with lock:
+            new_packet = self.stream.encode(frame)
+        self.container.mux(new_packet)
+        if self._frame_count <= 0:
+            self._frame_count = self._restart_every
+            new_packet = self.stream.encode(None)
+            self.container.mux(new_packet)
+            self.stream.codec_context.close()
+            self.stream.codec_context.open()
 
 
 class Transcoder:
@@ -64,7 +130,7 @@ class Transcoder:
                 out_v.width = t_v.width
                 out_v.height = t_v.height
                 out_v.codec_context.time_base = Fraction(1, 1000000)
-                info['streams']['video'] = out_v
+                info['streams']['video_async'] = HQVideo(out_v)
                 info['streams']['audio'] = container.add_stream(template=t_a)
             elif info['mode'] == 'compact':
                 a_o = {
@@ -86,7 +152,7 @@ class Transcoder:
                 out_v.width = t_v.width
                 out_v.height = t_v.height
                 out_v.codec_context.time_base = Fraction(1, 1000000)
-                info['streams']['video'] = out_v
+                info['streams']['video_async'] = CompactVideo(out_v, restart_every=1000)
                 info['frame_count'] = {'audio': 0}
 
         for s in ['video', 'audio']:
@@ -120,7 +186,7 @@ class Transcoder:
                     continue  # dummy packages are useless for our custom decoders
                 progress_time = float(max(0, packet.dts * packet.time_base))
                 logging_refresh(logging.DEBUG, f"progress={progress_time / total_time * 100:.1f}% "
-                                              f"time={progress_time:.1f}s/{total_time:.1f}s")
+                                               f"time={progress_time:.1f}s/{total_time:.1f}s")
                 s = packet.stream.type
                 # reset packet info
                 packet.pts += offset[s]
@@ -139,8 +205,7 @@ class Transcoder:
                         elif info['mode'] in ('hq', 'compact'):
                             for frame in frames:
                                 frame.pict_type = 0
-                                new_packet = info['streams']['video'].encode(frame)
-                                container.mux(new_packet)
+                                info['streams']['video_async'].put([frame, threading.Lock()])
                     if packet.stream.type == 'audio':
                         if info['mode'] in ['origin', 'hq']:
                             if packet.dts is not None:
@@ -155,7 +220,6 @@ class Transcoder:
                                     p.pts = p.dts = info['frame_count']['audio']
                                     info['frame_count']['audio'] += p.duration
                                 container.mux(new_packet)
-
         self._input_info['pts_offset'] = pts_max  # save pts info for next input
 
     def flush_close(self):
@@ -169,8 +233,7 @@ class Transcoder:
                 for frame in frames['video']:
                     if frame is not None:
                         frame.pict_type = 0
-                    new_packet = info['streams']['video'].encode(frame)
-                    container.mux(new_packet)
+                    info['streams']['video_async'].put([frame, threading.Lock()])
             if info['mode'] == 'compact':
                 for frame in frames['audio']:
                     if frame is not None:
