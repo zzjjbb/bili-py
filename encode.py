@@ -24,12 +24,14 @@ def logging_refresh(refresh_interval=1):
     _func.time = 0
     return _func
 
+
 def copy_packet(packet):
     new_packet = av.Packet(packet)
     new_packet.time_base = packet.time_base
     new_packet.pts = packet.pts
     new_packet.dts = packet.dts
     return new_packet
+
 
 class AsyncStream(ABC):
     """
@@ -61,7 +63,7 @@ class AsyncStream(ABC):
             packets = [packets]
         for p in packets:
             assert isinstance(p, av.Packet)
-            self._mux_queue.put((p.dts * p.time_base + random.random()*0.001, p))
+            self._mux_queue.put((p.dts * p.time_base + random.random() * 0.001, p))
             if p.stream.type == 'video':
                 self._unmuxed_video += 1
 
@@ -216,13 +218,14 @@ class Transcoder:
                 self.init_with_template(input_)
             streams_in = {}
             offset = {}
+            start_time = {}
             for s in ['video', 'audio']:
                 streams_in[s] = input_.streams.get({s: 0})[0]
-                offset[s] = self._input_info['pts_offset'][s] - streams_in[s].start_time
+                offset[s] = self._input_info['pts_offset'][s]
                 if self._input_info['time_base'][s] is None:
                     self._input_info['time_base'][s] = streams_in[s].time_base
                 elif self._input_info['time_base'][s] != streams_in[s].time_base:
-                    raise ValueError(f"video '{in_vid}' has different time base with previous ones!")
+                    raise ValueError(f"file '{in_vid}' has different time base with previous ones!")
 
             pts_max = {'video': 0, 'audio': 0}
             total_time = float(input_.duration / av.time_base)
@@ -230,11 +233,14 @@ class Transcoder:
             for i, packet in enumerate(input_.demux()):
                 if packet.dts is None:
                     continue  # dummy packages are useless for our custom decoders
-                progress_time = float(max(0, packet.dts * packet.time_base))
-                progress_logger(logging.DEBUG, f"progress={progress_time / total_time * 100:.1f}% "
-                                               f"time={progress_time:.1f}s/{total_time:.1f}s")
                 s = packet.stream.type
                 # reset packet info
+                if start_time.get(s) is None:
+                    start_time[s] = packet.pts
+                    offset[s] -= start_time[s]
+                progress_time = float(max(0, (packet.dts - start_time[s]) * packet.time_base))
+                progress_logger(logging.DEBUG, f"progress={progress_time / total_time * 100:.1f}% "
+                                               f"time={progress_time:.1f}s/{total_time:.1f}s")
                 packet.pts += offset[s]
                 packet.dts += offset[s]
                 pts_max[s] = max(pts_max[s], packet.pts + packet.duration)
