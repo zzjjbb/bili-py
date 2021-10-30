@@ -24,6 +24,12 @@ def logging_refresh(refresh_interval=1):
     _func.time = 0
     return _func
 
+def copy_packet(packet):
+    new_packet = av.Packet(packet)
+    new_packet.time_base = packet.time_base
+    new_packet.pts = packet.pts
+    new_packet.dts = packet.dts
+    return new_packet
 
 class AsyncStream(ABC):
     """
@@ -249,12 +255,13 @@ class Transcoder:
                     if packet.stream.type == 'audio':
                         if info['mode'] == 'origin':
                             if packet.dts is not None:
-                                # packet.stream = info['streams']['audio']
+                                packet.stream = info['streams']['audio']
                                 container.mux(packet)
                         elif info['mode'] == 'hq':
                             if packet.dts is not None:
-                                # packet.stream = info['streams']['audio']
-                                info['streams']['async'].mux(packet)
+                                new_packet = copy_packet(packet)
+                                new_packet.stream = info['streams']['audio']
+                                info['streams']['async'].mux(new_packet)
 
                         elif info['mode'] == 'compact':
                             for frame in frames:
