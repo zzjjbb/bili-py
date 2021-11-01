@@ -109,11 +109,12 @@ class HQVideo(AsyncStream):
 class CompactVideo(AsyncStream):
     _restart_every = float('inf')
 
-    def __init__(self, *args, restart_every=0, **kwargs):
+    def __init__(self, *args, restart_every=0, options, **kwargs):
         if restart_every > 0:
             self._restart_every = restart_every
         self._frame_count = self._restart_every
         self.logger = logging_refresh(10)
+        self.options = options
         super().__init__(*args, **kwargs)
 
     def _encode(self, frame_info):
@@ -125,6 +126,8 @@ class CompactVideo(AsyncStream):
             self._frame_count = self._restart_every
             self.mux(self.stream.encode(None))
             self.stream.codec_context.close()
+            if self.options is not None:
+                self.stream.codec_context.options = self.options
             self.stream.codec_context.open()
         self.logger(logging.DEBUG, f"{self}: queue size {self._queue.qsize()}")
 
@@ -158,7 +161,7 @@ class Transcoder:
                     'crf':         '25',
                     'mbtree':      '1',
                     'refs':        '10',
-                    'g':           '240',
+                    'g':           '480',
                     'keyint_min':  '1',
                     'bf':          '4',
                     'me_method':   'umh',
@@ -191,15 +194,14 @@ class Transcoder:
                 info['streams']['audio'] = out_a
                 v_o = {
                     'preset':   '8',
-                    'qp':       '58',
+                    'qp':       '54',
                     'la_depth': '90',
-                    'bsf':      'color_range=pc'
                 }
                 out_v = container.add_stream('libsvtav1', options=v_o, rate=t_v.guessed_rate)
                 out_v.width = t_v.width
                 out_v.height = t_v.height
                 out_v.codec_context.time_base = Fraction(1, 1000000)
-                info['streams']['async'] = CompactVideo(out_v, restart_every=60000)
+                info['streams']['async'] = CompactVideo(out_v, restart_every=60000, options=v_o)
                 info['frame_count'] = {'audio': 0}
 
         for s in ['video', 'audio']:
