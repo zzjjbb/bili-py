@@ -557,7 +557,8 @@ def ConvertFlashRotation(rotY, rotZ, X, Y, width, height):
     return (trX, trY, WrapAngle(outX), WrapAngle(outY), WrapAngle(outZ), scaleXY * 100, scaleXY * 100)
 
 
-def ProcessComments(comments, f, width, height, bottomReserved, fontface, fontsize, alpha, duration_marquee, duration_still, filters_regex, reduced, progress_callback):
+def ProcessComments(comments, f, width, height, bottomReserved, fontface, fontsize, alpha, duration_marquee,
+                    duration_still, filters_regex, reduced, drop_rate, progress_callback):
     styleid = 'Danmaku2ASS_%04x' % random.randint(0, 0xffff)
     WriteASSHead(f, width, height, fontface, fontsize, alpha, styleid)
     rows = [[None] * (height - bottomReserved + 1) for i in range(4)]
@@ -565,6 +566,8 @@ def ProcessComments(comments, f, width, height, bottomReserved, fontface, fontsi
         if progress_callback and idx % 1000 == 0:
             progress_callback(idx, len(comments))
         if isinstance(i[4], int):
+            if random.random() < drop_rate:
+                continue
             skip = False
             for filter_regex in filters_regex:
                 if filter_regex and filter_regex.search(i[3]):
@@ -776,7 +779,10 @@ def export(func):
 
 
 @export
-def Danmaku2ASS(input_files, input_format, output_file, stage_width, stage_height, reserve_blank=0, font_face=_('(FONT) sans-serif')[7:], font_size=25.0, text_opacity=1.0, duration_marquee=5.0, duration_still=5.0, comment_filter=None, comment_filters_file=None, is_reduce_comments=False, progress_callback=None):
+def Danmaku2ASS(input_files, input_format, output_file, stage_width, stage_height, reserve_blank=0,
+                font_face=_('(FONT) sans-serif')[7:], font_size=25.0, text_opacity=1.0, duration_marquee=5.0,
+                duration_still=5.0, comment_filter=None, comment_filters_file=None, is_reduce_comments=False,
+                drop_rate=0.0, progress_callback=None):
     comment_filters = [comment_filter]
     if comment_filters_file:
         with open(comment_filters_file, 'r') as f:
@@ -796,7 +802,9 @@ def Danmaku2ASS(input_files, input_format, output_file, stage_width, stage_heigh
             fo = ConvertToFile(output_file, 'w', encoding='utf-8-sig', errors='replace', newline='\r\n')
         else:
             fo = sys.stdout
-        ProcessComments(comments, fo, stage_width, stage_height, reserve_blank, font_face, font_size, text_opacity, duration_marquee, duration_still, filters_regex, is_reduce_comments, progress_callback)
+        ProcessComments(comments, fo, stage_width, stage_height, reserve_blank, font_face, font_size, text_opacity,
+                        duration_marquee, duration_still, filters_regex, is_reduce_comments, drop_rate,
+                        progress_callback)
     finally:
         if output_file and fo != output_file:
             fo.close()
@@ -859,6 +867,7 @@ def main():
     parser.add_argument('-p', '--protect', metavar=_('HEIGHT'), help=_('Reserve blank on the bottom of the stage'), type=int, default=0)
     parser.add_argument('-r', '--reduce', action='store_true', help=_('Reduce the amount of comments if stage is full'))
     parser.add_argument('file', metavar=_('FILE'), nargs='+', help=_('Comment file to be processed'))
+    parser.add_argument('--drop', type=float, default=0.0)
     args = parser.parse_args()
     try:
         width, height = str(args.size).split('x', 1)
@@ -866,7 +875,8 @@ def main():
         height = int(height)
     except ValueError:
         raise ValueError(_('Invalid stage size: %r') % args.size)
-    Danmaku2ASS(args.file, args.format, args.output, width, height, args.protect, args.font, args.fontsize, args.alpha, args.duration_marquee, args.duration_still, args.filter, args.filter_file, args.reduce)
+    Danmaku2ASS(args.file, args.format, args.output, width, height, args.protect, args.font, args.fontsize, args.alpha,
+                args.duration_marquee, args.duration_still, args.filter, args.filter_file, args.reduce, args.drop)
 
 
 if __name__ == '__main__':
