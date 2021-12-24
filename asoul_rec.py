@@ -4,13 +4,17 @@ from datetime import datetime
 from itertools import zip_longest
 from pkg.live.record import RecList, Danmaku, URLList
 import warnings
+import argparse
 
 PAGE_SIZE = 5
 UTC_OFFSET = 8 * 3600
 
 
 def confirm(s):
-    return input(s + " (y/N)").lower() == 'y'
+    if is_interact:
+        return input(s + " (y/N)").lower() == 'y'
+    else:
+        return True
 
 
 def abort():
@@ -44,9 +48,43 @@ def select(pages):
                 abort()
     return item
 
+def down_dm(rid):
+    dm = []
+    for i, new_dm in enumerate(Danmaku(rid)):
+        if isinstance(new_dm_list := new_dm['dm_info'], list):
+            dm.extend(new_dm_list)
+        else:
+            warnings.warn("Invalid danmaku chunk!")
+        print(f'Finish getting index {i}, current length {len(dm)}')
+    print(f'Reach the end')
+    with open(rid + '.json', 'w') as f:
+        json.dump(dm, f)
+
+def down_aria2(rid, conf, name=None):
+    import aria2p
+    import re
+
+    # conf = note['aria2vps']
+    aria2 = aria2p.API(aria2p.Client(**conf['client']))
+    all_uri = [u['url'] for u in URLList(rid)]
+    # date = datetime.utcfromtimestamp(rec['start_timestamp'] + UTC_OFFSET).strftime('%y%m%d')
+    options = {'dir': f"{conf['dir']}/{name}/source"}
+    for u in all_uri:
+        options['out'] = re.search(r".{13}:\d\d:\d\d\.flv", u).group().replace(':', '')
+        aria2.add_uris([u], options)
+
+def format_name(rec):
+    date = datetime.utcfromtimestamp(rec['start_timestamp'] + UTC_OFFSET).strftime('%y%m%d')
+
 
 if __name__ == '__main__':
-    name = input("A-SOUL name:")
+    pass
+    if len(sys.argv) > 1:
+        parser = argparse.ArgumentParser("Download A-SOUL live records")
+        parser.add_argument()
+    else:
+        is_interact = True
+        name = input("A-SOUL name:")
     print("Loading record list...")
 
     with open("note.json") as f:
@@ -62,25 +100,5 @@ if __name__ == '__main__':
         if confirm(f"RID: {rid}, Title: {title}"):
             break
     if confirm("Download danmaku?"):
-        dm = []
-        for i, new_dm in enumerate(Danmaku(rid)):
-            if isinstance(new_dm_list := new_dm['dm_info'], list):
-                dm.extend(new_dm_list)
-            else:
-                warnings.warn("Invalid danmaku chunk!")
-            print(f'Finish getting index {i}, current length {len(dm)}')
-        print(f'Reach the end')
-        with open(rid + '.json', 'w') as f:
-            json.dump(dm, f)
+        down_dm(rid)
     if confirm("Download with aria2?"):
-        import aria2p
-        import re
-
-        conf = note['aria2']
-        aria2 = aria2p.API(aria2p.Client(**conf['client']))
-        all_uri = [u['url'] for u in URLList(rid)]
-        date = datetime.utcfromtimestamp(rec['start_timestamp'] + UTC_OFFSET).strftime('%y%m%d')
-        options = {'dir': f"{conf['dir']}/[{date}] {title} - {note[name]['name']}/source"}
-        for u in all_uri:
-            options['out'] = re.search(r".{13}:\d\d:\d\d\.flv", u).group().replace(':', '')
-            aria2.add_uris([u], options)

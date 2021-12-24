@@ -2,32 +2,101 @@ from copy import deepcopy
 from itertools import chain, count
 import json
 import requests
-from ..other.exceptions import APIError
+from ..other import tools
 
 URL_BASE = "https://api.live.bilibili.com/xlive/web-room/v1/"
 
 
 class Danmaku:
     URL = URL_BASE + "dM/getDMMsgByPlayBackID"
+    EAGER_LOAD = 10
 
-    def __init__(self, rid):
-        self.rid = rid
+    def __init__(self, rec):
+        if isinstance(rec, RecInfo):
+            self.rec_info = rec
+            self.rid = rec.rid
+        else:
+            self.rec_info = None
+            self.rid = rec
 
-    def __getitem__(self, item):
+    def get(self, workers=1):
+        if workers != 1:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            with ThreadPoolExecutor(workers) as e:
+                if self.rec_info is None:
+                    self.rec_info = RecInfo(self.rid)
+                if not self.rec_info.initialized():
+                    get_info = e.submit(lambda: self.rec_info.raw_data)
+                    tasks = [e.submit(self.get_segment, i) for i in range(self.EAGER_LOAD)]
+                    dm_num = get_info.result()['dm_info']['num']
+                    if dm_num <= self.EAGER_LOAD:
+                        tasks = tasks[:dm_num]
+                    else:
+                        tasks.extend([
+                            e.submit(self.get_segment, i)
+                            for i in range(self.EAGER_LOAD, dm_num)
+                        ])
+                else:
+                    tasks = [e.submit(self.get_segment, i) for i in range(self.rec_info.dm_info['num'])]
+
+            all_dm = [i.result() for i in tasks]
+            dm_ = []
+            in_ = []
+            for i in all_dm:
+                dm_.extend(i['dm_info'])
+                in_.extend(i['interactive_info'])
+            return {'dm_info': dm_, 'interactive_info': in_}
+
+    def get_segment(self, item):
         params = {
             'rid':   self.rid,
             'index': item
         }
         response = requests.get(self.URL, params)
-        data = json.loads(response.content)
-        code = data['code']
-        msg = data['message']
-        if code == 0:
-            return data['data']['dm']
-        elif code == 10002:
-            raise IndexError(msg)
+        data = tools.load_data(response.json())
+        return data['dm']
+
+
+class RecInfo:
+    URL = URL_BASE + "record/getInfoByLiveRecord"
+    room_id: int
+    uid: int
+    title: str
+    area_id: int
+    parent_area_id: int
+    area_name: str
+    parent_area_name: str
+    start_timestamp: int
+    end_timestamp: int
+    online: int
+    dm_info: dict
+
+    def __init__(self, rid):
+        self.rid = rid
+        self._raw_data = None
+
+    def __getattr__(self, item):
+        if item == 'dm_info':
+            return self.raw_data[item]
         else:
-            raise APIError(code, msg)
+            # elif item in ['room_id', 'uid', 'title', 'area_id', 'parent_area_id', 'area_name', 'parent_area_name',
+            #               'start_timestamp', 'end_timestamp', 'online', 'danmu_num', 'live_screen_type']:
+            try:
+                return self.raw_data['live_record_info'][item]
+            except KeyError:
+                raise AttributeError(f"{type(self)} object has no attribute '{item}'") from None
+
+    @property
+    def raw_data(self):
+        if self._raw_data is None:
+            params = {"rid": self.rid}
+            response = requests.get(self.URL, params)
+            data = tools.load_data(response.json())
+            self._raw_data = data
+        return self._raw_data
+
+    def initialized(self):
+        return self._raw_data is not None
 
 
 class RecList:
@@ -36,7 +105,8 @@ class RecList:
     def __init__(self, room_id, page_size=20):
         self.room_id = room_id
         self._page_size = page_size
-        self.flush()
+        self._count = None
+        self._cache = {}
 
     def flush(self):
         self._count = None
@@ -57,19 +127,14 @@ class RecList:
             "page_size": self._page_size
         }
         response = requests.get(self.URL, params)
-        data = json.loads(response.content)
-        code = data['code']
-        msg = data['message']
-
-        if code == 0:
-            if force:
-                self._count = data['data']['count']
-            else:
-                assert self._count == data['data']['count']
-            self._cache[page] = data['data']['list']
-            return deepcopy(data['data']['list'])
+        data = tools.load_data(response.json())
+        # force refresh count
+        if force:
+            self._count = data['count']
         else:
-            raise APIError(code, msg)
+            assert self._count == data['count']
+        self._cache[page] = data['list']
+        return deepcopy(data['list'])
 
     def __iter__(self):
         def pages():
@@ -98,17 +163,11 @@ class URLList:
                 'platform': self.platform
             }
             response = requests.get(self.URL, params)
-            data = json.loads(response.content)
-            code = data['code']
-            msg = data['message']
-            if code == 0:
-                metadata = data['data']
-                urls = metadata.pop('list')
-                self._urls = urls
-                self._metadata = metadata
-                return urls, metadata
-            else:
-                raise APIError(code, msg)
+            metadata = tools.load_data(response.json())
+            urls = metadata.pop('list')
+            self._urls = urls
+            self._metadata = metadata
+            return urls, metadata
 
     @property
     def metadata(self):
