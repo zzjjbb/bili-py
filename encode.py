@@ -201,7 +201,7 @@ class Transcoder:
                 out_v.width = t_v.width
                 out_v.height = t_v.height
                 out_v.codec_context.time_base = Fraction(1, 1000000)
-                info['streams']['async'] = CompactVideo(out_v, restart_every=60000, options=v_o)
+                info['streams']['async'] = CompactVideo(out_v, options=v_o)
                 info['frame_count'] = {'audio': 0}
 
         for s in ['video', 'audio']:
