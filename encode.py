@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import av
-import sys
+# import sys
 import os
 import logging
 import time
@@ -10,6 +10,7 @@ import warnings
 import random
 import threading
 from abc import ABC, abstractmethod
+import argparse
 
 logging.basicConfig(format='%(asctime)s [%(levelname).1s] %(message)s', level=logging.DEBUG)
 logging.getLogger('libav').setLevel(logging.INFO)
@@ -308,12 +309,25 @@ class Transcoder:
             container.close()
 
 
-in_dir = sys.argv[1]
-out_dir = sys.argv[2]
+parser = argparse.ArgumentParser(description="encode video as H.264/AV1 and mux in mp4/webm")
+parser.add_argument('src', help="source directory for input videos")
+parser.add_argument('dst', help="destination directory for output videos")
+parser.add_argument('-t', '--type', metavar='O/H/C',
+                    help='use letter(s) to control which file will be generated (default is all)')
+
+args = parser.parse_args()
+in_dir = args.src
+out_dir = args.dst
+if args.type is None:
+    out_type = 'OHC'
+else:
+    out_type = [t for t in 'OHC' if t in args.type.upper()]
+
 vid_names = os.listdir(in_dir)
 vid_names.sort(reverse=False)
-out_list = [av.open(os.path.join(out_dir, name), mode='w') for name in ['origin.mp4', 'hq.mp4', 'compact.webm']]
-out_info = [{'mode': m} for m in ['origin', 'hq', 'compact']]
+out_list = [av.open(os.path.join(out_dir, {'O': 'origin.mp4', 'H': 'hq.mp4', 'C': 'compact.webm'}[t]), mode='w')
+            for t in out_type]
+out_info = [{'mode': {'O': 'origin', 'H': 'hq', 'C': 'compact'}[t]} for t in out_type]
 
 transcoder = Transcoder(out_list, out_info)
 
