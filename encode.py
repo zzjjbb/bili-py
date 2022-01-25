@@ -147,6 +147,17 @@ class Transcoder:
         t_a = template.streams.audio[0]
         t_s = {'video': t_v, 'audio': t_a}
 
+        def copy_format_info(src, dst, *, pix_fmt=True):
+            dst.width = src.width
+            dst.height = src.height
+            dst.sample_aspect_ratio = src.sample_aspect_ratio
+            if pix_fmt:
+                dst.pix_fmt = src.pix_fmt
+                dst.codec_context.color_primaries = src.codec_context.color_primaries
+                dst.codec_context.color_trc = src.codec_context.color_trc
+                dst.codec_context.colorspace = src.codec_context.colorspace
+                dst.codec_context.color_range = src.codec_context.color_range
+
         # set stream for output containers
         for container, info in zip(self.containers, self.infos):
             if info.get('streams', False):  # complain if any content have been set in info['streams']
@@ -177,10 +188,8 @@ class Transcoder:
                     'thread_type': 'frame'
                 }
                 out_v = container.add_stream('libx264', options=v_o, rate=t_v.framerate)
-                out_v.pix_fmt = t_v.pix_fmt
-                out_v.width = t_v.width
-                out_v.height = t_v.height
-                out_v.codec_context.time_base = Fraction(1, 1000000)
+                copy_format_info(t_v, out_v)
+                out_v.codec_context.time_base = Fraction(1, 48000)
                 info['streams']['async'] = HQVideo(out_v)
                 info['streams']['audio'] = container.add_stream(template=t_a)
             elif info['mode'] == 'compact':
@@ -199,9 +208,8 @@ class Transcoder:
                     'la_depth': '90',
                 }
                 out_v = container.add_stream('libsvtav1', options=v_o, rate=t_v.guessed_rate)
-                out_v.width = t_v.width
-                out_v.height = t_v.height
-                out_v.codec_context.time_base = Fraction(1, 1000000)
+                copy_format_info(t_v, out_v, pix_fmt=False)
+                out_v.codec_context.time_base = Fraction(1, 48000)
                 info['streams']['async'] = CompactVideo(out_v, options=v_o)
                 info['frame_count'] = {'audio': 0}
 
@@ -315,13 +323,13 @@ parser.add_argument('dst', help="destination directory for output videos")
 parser.add_argument('-t', '--type', metavar='O/H/C',
                     help='use letter(s) to control which file will be generated (default is all)')
 
-args = parser.parse_args()
-in_dir = args.src
-out_dir = args.dst
-if args.type is None:
+cli_args = parser.parse_args()
+in_dir = cli_args.src
+out_dir = cli_args.dst
+if cli_args.type is None:
     out_type = 'OHC'
 else:
-    out_type = [t for t in 'OHC' if t in args.type.upper()]
+    out_type = [t for t in 'OHC' if t in cli_args.type.upper()]
 
 vid_names = os.listdir(in_dir)
 vid_names.sort(reverse=False)
