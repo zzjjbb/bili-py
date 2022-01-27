@@ -147,16 +147,21 @@ class Transcoder:
         t_a = template.streams.audio[0]
         t_s = {'video': t_v, 'audio': t_a}
 
-        def copy_format_info(src, dst, *, pix_fmt=True):
+        def copy_format_info(src, dst):
             dst.width = src.width
             dst.height = src.height
             dst.sample_aspect_ratio = src.sample_aspect_ratio
-            if pix_fmt:
-                dst.pix_fmt = src.pix_fmt
-                dst.codec_context.color_primaries = src.codec_context.color_primaries
-                dst.codec_context.color_trc = src.codec_context.color_trc
-                dst.codec_context.colorspace = src.codec_context.colorspace
-                dst.codec_context.color_range = src.codec_context.color_range
+            dst.pix_fmt = "yuv420p"
+            dst.codec_context.color_range = 1
+            dst.codec_context.color_primaries = src.codec_context.color_primaries
+            dst.codec_context.color_trc = src.codec_context.color_trc
+            dst.codec_context.colorspace = src.codec_context.colorspace
+            # if pix_fmt:
+            #     dst.pix_fmt = src.pix_fmt
+            #     dst.codec_context.color_primaries = src.codec_context.color_primaries
+            #     dst.codec_context.color_trc = src.codec_context.color_trc
+            #     dst.codec_context.colorspace = src.codec_context.colorspace
+            #     dst.codec_context.color_range = src.codec_context.color_range
 
         # set stream for output containers
         for container, info in zip(self.containers, self.infos):
@@ -208,7 +213,7 @@ class Transcoder:
                     'la_depth': '90',
                 }
                 out_v = container.add_stream('libsvtav1', options=v_o, rate=t_v.guessed_rate)
-                copy_format_info(t_v, out_v, pix_fmt=False)
+                copy_format_info(t_v, out_v)
                 out_v.codec_context.time_base = Fraction(1, 48000)
                 info['streams']['async'] = CompactVideo(out_v, options=v_o)
                 info['frame_count'] = {'audio': 0}
