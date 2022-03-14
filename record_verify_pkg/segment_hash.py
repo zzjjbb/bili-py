@@ -95,14 +95,22 @@ def get_hash(video_name):
     return {'name': os.path.basename(video_name), 'time_base': time_base, 'data': out}
 
 
-base_dir = sys.argv[1]
+src_path = sys.argv[1]
 out_path = sys.argv[2]
 
 all_info = []
-vid_names = os.listdir(base_dir)
-vid_names.sort()
-for vid_name in vid_names:
-    if vid_name[-3:] in ['flv', 'mp4']:
-        all_info.append(get_hash(os.path.join(base_dir, vid_name)))
+# pre-check file write access
+open(out_path, 'a').close()
+
+# dir as a sequence of videos
+if os.path.isdir(src_path):
+    vid_names = os.listdir(src_path)
+    vid_names.sort()
+    for vid_name in vid_names:
+        if vid_name[-3:] in ['flv', 'mp4']:
+            all_info.append(get_hash(os.path.join(src_path, vid_name)))
+else:  # single video also OK
+    all_info.append(get_hash(src_path))
+
 with open(out_path, 'w') as f:
     json.dump(all_info, f, indent=1)
