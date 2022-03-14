@@ -8,8 +8,10 @@ import logging
 class HashCheckDifference(Exception):
     pass
 
+
 class VATuple(namedtuple('VATuple', ['video', 'audio'])):
     pass
+
 
 class Segment(namedtuple('Segment',
                          ['keyframe_md5', 'segment_md5', 'start_pts', 'end_pts', 'frames', 'time_base'],
@@ -104,7 +106,7 @@ class SubPart:
 
     def __repr__(self):
         data = {'name':       self.name,
-                'time_range': (self[0].start_str, self[-1].end_str),
+                'time_range': (getattr(self[0], 'start_str', 'unknown'), getattr(self[-1], 'end_str', 'unknown')),
                 'slice':      slice(self.start, self.end)}
         return f"{type(self).__name__}({data.__repr__()[1:-1]})"
 
