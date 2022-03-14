@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import av
-# import sys
+import sys
 import os
 import logging
 import time
@@ -342,7 +342,15 @@ out_list = [av.open(os.path.join(out_dir, {'O': 'origin.mp4', 'H': 'hq.mp4', 'C'
             for t in out_type]
 out_info = [{'mode': {'O': 'origin', 'H': 'hq', 'C': 'compact'}[t]} for t in out_type]
 
+if not vid_names:
+    logging.warning(f"no output video. exiting")
+    sys.exit(1)
+
 transcoder = Transcoder(out_list, out_info)
+
+if not vid_names:
+    logging.error(f"no valid source video. exiting")
+    sys.exit(1)
 
 try:
     for vid_name in vid_names:
