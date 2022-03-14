@@ -6,6 +6,7 @@ from hashlib import md5
 from io import BytesIO
 import av
 import time
+import argparse
 
 
 def check_av_stream(container):
@@ -95,8 +96,13 @@ def get_hash(video_name):
     return {'name': os.path.basename(video_name), 'time_base': time_base, 'data': out}
 
 
-src_path = sys.argv[1]
-out_path = sys.argv[2]
+parser = argparse.ArgumentParser(description="hash video or video sequences segmented by key frame")
+parser.add_argument('src', help="source file/directory for input video(s)")
+parser.add_argument('out', help="output path for json file")
+cli_args = parser.parse_args()
+
+src_path = cli_args.src
+out_path = cli_args.out
 
 all_info = []
 # pre-check file write access
