@@ -8,20 +8,53 @@ import argparse
 
 logging.basicConfig(format='%(asctime)s [%(levelname).1s] %(message)s', level=logging.INFO)
 
-parser = argparse.ArgumentParser(description="attach media information in 'play' file")
+parser = argparse.ArgumentParser(description="Attach media information in 'play' file [v220320]")
 parser.add_argument('path', help="source directory/directories (glob pattern)")
 parser.add_argument('-f', '--force', action='store_true',
                     help="overwrite 'media_info' even if it already exists")
 cli_args = parser.parse_args()
 
-for rec_dir in glob.glob(cli_args.path):
-    logging.info("processing %s", rec_dir)
+for rec_dir in glob.glob(cli_args.path):  # TODO: change `break` to function with `return` to increase readability
+    logging.info("start processing %s", rec_dir)
     play_name = os.path.join(rec_dir, "play")
-    try:
-        with open(play_name, encoding='utf8') as play_f:
-            play = json.load(play_f)
-    except OSError as e:
-        logging.error("'%s' is an invalid play file, skipped", play_name)
+    if os.path.exists(play_name):
+        try:
+            with open(play_name, encoding='utf8') as play_f:
+                play = json.load(play_f)
+        except OSError as e:
+            logging.error("'%s' is an invalid play file, skipped", play_name)
+            continue
+    else:
+        play = {
+            'video':   {'quality': [], 'defaultQuality': 0},
+            "danmaku": {"addition": []}
+        }
+        try:  # try to fill reasonable value for video/danmaku
+            trans_files = os.listdir(os.path.join(rec_dir, "transcoded"))
+            if "origin.mp4" in trans_files:
+                play['video']['quality'].append({
+                    "name": "原画",
+                    "url":  "transcoded/origin.mp4"
+                })
+            if "hq.mp4" in trans_files:
+                play['video']['quality'].append({
+                    "name": "高清",
+                    "url":  "transcoded/hq.mp4"
+                })
+                # choose hq as default if possible
+                play['video']['defaultQuality'] = len(play['video']['quality']) - 1
+            if "compact.webm" in trans_files:
+                play['video']['quality'].append({
+                    "name": "流畅",
+                    "url":  "transcoded/compact.webm"
+                })
+            if "danmaku.json" in trans_files:
+                play['danmaku']['addition'].append("transcoded/danmaku.json")
+        except OSError:
+            pass
+    if not play['video']['quality']:
+        logging.error("no video in %s, skipped (please check play file or transcoded dir)", rec_dir)
+        continue
     if play.get('media_info') and not cli_args.force:
         logging.warning("not overwriting '%s', skipped", play_name)
         continue
