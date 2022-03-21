@@ -26,7 +26,7 @@ try:
     with open(os.path.join(base_dir, 'play'), 'r', encoding='utf8') as info_f:
         info = json.load(info_f)
         offset = info['offset']['danmaku']
-        logging.info("loaded from 'play' file: offset=%.1fs", offset)
+        logging.info("loaded from 'play' file: offset %+.1fs", offset)
 except (FileNotFoundError, KeyError):
     pass
 
@@ -36,7 +36,7 @@ with open(src, 'r', encoding='utf8') as f_in, open(dst, 'w', encoding='utf8') as
     if src_ext == 'json':
         d_in = json.load(f_in)
         d_out = [[
-            round(i['ts'] / 1000 - offset, 1),  # time ms->s, 1 digit
+            round(i['ts'] / 1000 + offset, 1),  # time ms->s, 1 digit
             {1: 0, 4: 2, 5: 1}.get(i['dm_mode'], 0),  # position
             i['dm_color'],  # color
             0,  # user_hash, drop it
