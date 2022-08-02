@@ -12,7 +12,7 @@ import threading
 from abc import ABC, abstractmethod
 import argparse
 
-logging.basicConfig(format='%(asctime)s [%(levelname).1s] %(message)s', level=logging.DEBUG)
+logging.basicConfig(format='%(asctime)s [%(levelname).1s] [%(name)s] %(message)s', level=logging.DEBUG)
 logging.getLogger('libav').setLevel(logging.INFO)
 
 
@@ -143,6 +143,10 @@ class Transcoder:
         self.dummy_packet = {}
 
     def init_with_template(self, template):
+        """
+        Add audio/video streams to containers according to template (also according to mode name)
+        :param template: input stream of the transcoder
+        """
         t_v = template.streams.video[0]
         t_a = template.streams.audio[0]
         t_s = {'video': t_v, 'audio': t_a}
@@ -208,9 +212,9 @@ class Transcoder:
                 # out_a.time_base = out_a.codec_context.time_base = Fraction(1, t_a.sample_rate)
                 info['streams']['audio'] = out_a
                 v_o = {
-                    'preset':   '8',
-                    'qp':       '54',
-                    'la_depth': '90',
+                    'preset':   '5',
+                    'crf':      '50',
+                    'svtav1-params': 'tune=0:lp=10'
                 }
                 out_v = container.add_stream('libsvtav1', options=v_o, rate=t_v.guessed_rate)
                 copy_format_info(t_v, out_v)
@@ -242,7 +246,6 @@ class Transcoder:
                     self._input_info['time_base'][s] = streams_in[s].time_base
                 elif self._input_info['time_base'][s] != streams_in[s].time_base:
                     raise ValueError(f"file '{in_vid}' has different time base with previous ones!")
-
             pts_max = {'video': 0, 'audio': 0}
             total_time = float(input_.duration / av.time_base)
             progress_logger = logging_refresh()
@@ -322,7 +325,7 @@ class Transcoder:
             container.close()
 
 
-parser = argparse.ArgumentParser(description="encode video as H.264/AV1 and mux in mp4/webm")
+parser = argparse.ArgumentParser(description="encode video as H.264/AV1 and mux in mp4/webm [v220802.untested]")
 parser.add_argument('src', help="source directory for input videos")
 parser.add_argument('dst', help="destination directory for output videos")
 parser.add_argument('-t', '--type', metavar='O/H/C',
