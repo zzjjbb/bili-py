@@ -7,7 +7,7 @@ import argparse
 
 logging.basicConfig(format='%(asctime)s [%(levelname).1s] %(message)s', level=logging.INFO)
 
-parser = argparse.ArgumentParser(description="Convert json/xml danmaku file to DPlayer compatible form [v220320.1]")
+parser = argparse.ArgumentParser(description="Convert json/xml danmaku file to DPlayer compatible form [v220901]")
 parser.add_argument('dir', help="video directory")
 cli_args = parser.parse_args()
 base_dir = cli_args.dir
@@ -44,7 +44,7 @@ with open(src, 'r', encoding='utf8') as f_in, open(dst, 'w', encoding='utf8') as
         ] for i in d_in]
     elif src_ext == 'xml':
         d_out = [[
-            round(float((dm_attr := el.get('p').split(','))[0]), 1),
+            round(float((dm_attr := el.get('p').split(','))[0]) + offset, 1),
             {1: 0, 4: 2, 5: 1}.get(int(dm_attr[1]), 0),
             int(dm_attr[3]),  # color
             0,  # user_hash, drop it
