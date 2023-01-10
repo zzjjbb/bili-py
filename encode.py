@@ -59,7 +59,7 @@ class AsyncStream(ABC):
     def _encode(self, frame_info):
         ...
 
-    def mux(self, packets):
+    def put_mux_queue(self, packets):
         if isinstance(packets, av.Packet):
             packets = [packets]
         for p in packets:
@@ -103,7 +103,7 @@ class HQVideo(AsyncStream):
     def _encode(self, frame_info):
         frame, frame_lock = frame_info
         with frame_lock:
-            self.mux(self.stream.encode(frame))
+            self.put_mux_queue(self.stream.encode(frame))
         self.logger(logging.DEBUG, f"{self}: queue size {self._queue.qsize()}")
 
 
@@ -122,10 +122,10 @@ class CompactVideo(AsyncStream):
         self._frame_count -= 1
         frame, frame_lock = frame_info
         with frame_lock:
-            self.mux(self.stream.encode(frame))
+            self.put_mux_queue(self.stream.encode(frame))
         if self._frame_count <= 0:
             self._frame_count = self._restart_every
-            self.mux(self.stream.encode(None))
+            self.put_mux_queue(self.stream.encode(None))
             self.stream.codec_context.close()
             if self.options is not None:
                 self.stream.codec_context.options = self.options
@@ -208,12 +208,12 @@ class Transcoder:
                     'cutoff':          '20000',
                     'b':               '48000'
                 }
-                out_a = container.add_stream('libopus', options=a_o, rate=t_a.sample_rate)
+                out_a = container.add_stream('libopus', options=a_o, rate=48000)
                 # out_a.time_base = out_a.codec_context.time_base = Fraction(1, t_a.sample_rate)
                 info['streams']['audio'] = out_a
                 v_o = {
-                    'preset':   '5',
-                    'crf':      '50',
+                    'preset':        '5',
+                    'crf':           '50',
                     'svtav1-params': 'tune=0:lp=10'
                 }
                 out_v = container.add_stream('libsvtav1', options=v_o, rate=t_v.guessed_rate)
@@ -286,7 +286,7 @@ class Transcoder:
                             if packet.dts is not None:
                                 new_packet = copy_packet(packet)
                                 new_packet.stream = info['streams']['audio']
-                                info['streams']['async'].mux(new_packet)
+                                info['streams']['async'].put_mux_queue(new_packet)
 
                         elif info['mode'] == 'compact':
                             for frame in frames:
@@ -296,7 +296,7 @@ class Transcoder:
                                     p.time_base = Fraction(1, info['streams']['audio'].sample_rate)
                                     p.pts = p.dts = info['frame_count']['audio']
                                     info['frame_count']['audio'] += p.duration
-                                    info['streams']['async'].mux(new_packet)
+                                    info['streams']['async'].put_mux_queue(new_packet)
         self._input_info['pts_offset'] = pts_max  # save pts info for next input
 
     def flush_close(self):
@@ -315,7 +315,7 @@ class Transcoder:
                         p.time_base = Fraction(1, info['streams']['audio'].sample_rate)
                         p.pts = p.dts = info['frame_count']['audio']
                         info['frame_count']['audio'] += p.duration
-                    info['streams']['async'].mux(new_packet)
+                    info['streams']['async'].put_mux_queue(new_packet)
             if info['mode'] in ['hq', 'compact']:
                 for frame in frames['video']:
                     if frame is not None:
