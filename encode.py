@@ -141,6 +141,7 @@ class Transcoder:
         self.decoders = {}
         self._input_info = {'time_base': {'video': None, 'audio': None}, 'pts_offset': {'video': 0, 'audio': 0}}
         self.dummy_packet = {}
+        self.frame_pts = float("-inf")
 
     def init_with_template(self, template):
         """
@@ -275,6 +276,10 @@ class Transcoder:
                                 container.mux(packet)
                         elif info['mode'] in ('hq', 'compact'):
                             for frame in frames:
+                                if frame.pts <= self.frame_pts:
+                                    logging.warning("Decoder gives non monotonically increasing frame pts. Skipped")
+                                    continue
+                                self.frame_pts = frame.pts
                                 frame.pict_type = 0
                                 info['streams']['async'].put([frame, threading.Lock()])
                     if packet.stream.type == 'audio':
@@ -325,7 +330,8 @@ class Transcoder:
             container.close()
 
 
-parser = argparse.ArgumentParser(description="encode video as H.264/AV1 and mux in mp4/webm [v220802.untested]")
+
+parser = argparse.ArgumentParser(description="encode video as H.264/AV1 and mux in mp4/webm [v230110.1untested]")
 parser.add_argument('src', help="source directory for input videos")
 parser.add_argument('dst', help="destination directory for output videos")
 parser.add_argument('-t', '--type', metavar='O/H/C',
