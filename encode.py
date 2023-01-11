@@ -41,8 +41,9 @@ class AsyncStream(ABC):
     stream = None
     container = None
     _queue = None
+    _alive = True
 
-    def __init__(self, stream, maxsize=1800):
+    def __init__(self, stream, maxsize=300):
         self.stream = stream
         self.container = stream.container
         self._thread = threading.Thread(target=self.run)
@@ -80,12 +81,16 @@ class AsyncStream(ABC):
                 warnings.warn("reach end of mux_queue without flush_all")
 
     def run(self):
-        while True:  # main encoding loop
+        while self._alive:  # main encoding loop
             frame_info = self._queue.get()
             self._encode(frame_info)
             self._mux_flush()  # just call it periodically
             if frame_info[0] is None:
                 break
+        else:
+            return  # force stop, exit instantly
+
+        # getting an empty packet means reaching the end
         while not self._finish_flag:  # wait for finish signal
             time.sleep(0.1)
         self._mux_flush(True)  # until mux everything
@@ -94,6 +99,9 @@ class AsyncStream(ABC):
         self._finish_flag = True
         self._thread.join()
 
+    def force_stop(self):
+        self._alive = False
+        self._thread.join()
 
 class HQVideo(AsyncStream):
     def __init__(self, *args, **kwargs):
@@ -101,9 +109,8 @@ class HQVideo(AsyncStream):
         super().__init__(*args, **kwargs)
 
     def _encode(self, frame_info):
-        frame, frame_lock = frame_info
-        with frame_lock:
-            self.put_mux_queue(self.stream.encode(frame))
+        frame, _ = frame_info
+        self.put_mux_queue(self.stream.encode(frame))
         self.logger(logging.DEBUG, f"{self}: queue size {self._queue.qsize()}")
 
 
@@ -141,7 +148,7 @@ class Transcoder:
         self.decoders = {}
         self._input_info = {'time_base': {'video': None, 'audio': None}, 'pts_offset': {'video': 0, 'audio': 0}}
         self.dummy_packet = {}
-        self.frame_pts = float("-inf")
+        self.video_frame_pts = float("-inf")
 
     def init_with_template(self, template):
         """
@@ -233,6 +240,24 @@ class Transcoder:
             packet.time_base = t_s[s].time_base
             self.dummy_packet[s] = packet
 
+    def process_frames(self, frames, frame_type):
+        processed = []
+        for frame in frames:
+            if frame_type == 'video':
+                if frame is not None:
+                    if frame.pts <= self.video_frame_pts:
+                        logging.warning("Decoder gives non monotonically increasing frame pts. Skipped")
+                        continue
+                    self.video_frame_pts = frame.pts
+                    frame.pict_type = 0
+                # TODO: remove the None placeholder if Lock is not needed
+                frame = [frame, None]
+            elif frame_type == 'audio':
+                if frame is not None:
+                    frame.pts = None
+            processed.append(frame)
+        return processed
+
     def append(self, in_vid):
         with av.open(in_vid, metadata_errors='ignore') as input_:
             if self.infos[0].get('streams', None) is None:  # should be either all None or all not None
@@ -265,7 +290,7 @@ class Transcoder:
                 packet.dts += offset[s]
                 pts_max[s] = max(pts_max[s], packet.pts + packet.duration)
                 # decode by custom decoders
-                frames = self.decoders[s].decode(packet)
+                frames = self.process_frames(self.decoders[s].decode(packet), s)
                 # encode & mux
                 for container, info in zip(self.containers, self.infos):
                     # CAUTION: recheck before modifying packet/frames information, they may be reused in other mode
@@ -276,12 +301,7 @@ class Transcoder:
                                 container.mux(packet)
                         elif info['mode'] in ('hq', 'compact'):
                             for frame in frames:
-                                if frame.pts <= self.frame_pts:
-                                    logging.warning("Decoder gives non monotonically increasing frame pts. Skipped")
-                                    continue
-                                self.frame_pts = frame.pts
-                                frame.pict_type = 0
-                                info['streams']['async'].put([frame, threading.Lock()])
+                                info['streams']['async'].put(frame)
                     if packet.stream.type == 'audio':
                         if info['mode'] == 'origin':
                             if packet.dts is not None:
@@ -292,10 +312,8 @@ class Transcoder:
                                 new_packet = copy_packet(packet)
                                 new_packet.stream = info['streams']['audio']
                                 info['streams']['async'].put_mux_queue(new_packet)
-
                         elif info['mode'] == 'compact':
                             for frame in frames:
-                                frame.pts = None
                                 new_packet = info['streams']['audio'].encode(frame)
                                 for p in new_packet:
                                     p.time_base = Fraction(1, info['streams']['audio'].sample_rate)
@@ -309,12 +327,11 @@ class Transcoder:
         for s in ['video', 'audio']:
             frames[s] = self.decoders[s].decode(self.dummy_packet[s])
             frames[s].append(None)  # to flush encoder
+            frames[s] = self.process_frames(frames[s], s)
             self.decoders[s].close()
         for container, info in zip(self.containers, self.infos):
             if info['mode'] == 'compact':
                 for frame in frames['audio']:
-                    if frame is not None:
-                        frame.pts = None
                     new_packet = info['streams']['audio'].encode(frame)
                     for p in new_packet:
                         p.time_base = Fraction(1, info['streams']['audio'].sample_rate)
@@ -323,15 +340,25 @@ class Transcoder:
                     info['streams']['async'].put_mux_queue(new_packet)
             if info['mode'] in ['hq', 'compact']:
                 for frame in frames['video']:
-                    if frame is not None:
-                        frame.pict_type = 0
-                    info['streams']['async'].put([frame, threading.Lock()])
+                    info['streams']['async'].put(frame)
                 info['streams']['async'].wait_until_finish()
             container.close()
 
+    def force_close(self):
+        for info in self.infos:
+            if (s := info['streams'].get('async')) is not None:
+                s.force_stop()
+        for c in self.containers:
+            for s in c.streams:
+                if s.codec_context.is_encoder:
+                    s.encode(None)
+            c.close()
+        for s in ['video', 'audio']:
+            self.decoders[s].decode(self.dummy_packet[s])
+            self.decoders[s].close()
 
 
-parser = argparse.ArgumentParser(description="encode video as H.264/AV1 and mux in mp4/webm [v230110.1untested]")
+parser = argparse.ArgumentParser(description="encode video as H.264/AV1 and mux in mp4/webm [v230110.2untested]")
 parser.add_argument('src', help="source directory for input videos")
 parser.add_argument('dst', help="destination directory for output videos")
 parser.add_argument('-t', '--type', metavar='O/H/C',
@@ -367,8 +394,8 @@ try:
             logging.info(f"start processing '{vid_name}'")
             transcoder.append(os.path.join(in_dir, vid_name))
 except BaseException as e:
-    for c in out_list:
-        c.close()
+    logging.error(f"Encounter an error. Trying to flush and close")
+    transcoder.force_close()
     raise e
 
 transcoder.flush_close()
