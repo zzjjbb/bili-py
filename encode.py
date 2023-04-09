@@ -53,11 +53,11 @@ class AsyncStream(ABC):
         self._finish_flag = False
         self._thread.start()
 
-    def put(self, frame_info):
-        self._queue.put(frame_info)
+    def put(self, frame):
+        self._queue.put(frame)
 
     @abstractmethod
-    def _encode(self, frame_info):
+    def _encode(self, frame):
         ...
 
     def put_mux_queue(self, packets):
@@ -71,7 +71,7 @@ class AsyncStream(ABC):
 
     def _mux_flush(self, flush_all=False):
         try:  # mux when there are unmuxed video frames / forced flush all
-            while self._unmuxed_video or flush_all:
+            while self._unmuxed_video > 10 or flush_all:
                 p = self._mux_queue.get_nowait()[1]
                 self.container.mux_one(p)
                 if p.stream.type == 'video':
@@ -82,10 +82,10 @@ class AsyncStream(ABC):
 
     def run(self):
         while self._alive:  # main encoding loop
-            frame_info = self._queue.get()
-            self._encode(frame_info)
+            frame = self._queue.get()
+            self._encode(frame)
             self._mux_flush()  # just call it periodically
-            if frame_info[0] is None:
+            if frame is None:
                 break
         else:
             return  # force stop, exit instantly
@@ -103,13 +103,13 @@ class AsyncStream(ABC):
         self._alive = False
         self._thread.join()
 
+
 class HQVideo(AsyncStream):
     def __init__(self, *args, **kwargs):
         self.logger = logging_refresh(10)
         super().__init__(*args, **kwargs)
 
-    def _encode(self, frame_info):
-        frame, _ = frame_info
+    def _encode(self, frame):
         self.put_mux_queue(self.stream.encode(frame))
         self.logger(logging.DEBUG, f"{self}: queue size {self._queue.qsize()}")
 
@@ -125,11 +125,9 @@ class CompactVideo(AsyncStream):
         self.options = options
         super().__init__(*args, **kwargs)
 
-    def _encode(self, frame_info):
+    def _encode(self, frame):
         self._frame_count -= 1
-        frame, frame_lock = frame_info
-        with frame_lock:
-            self.put_mux_queue(self.stream.encode(frame))
+        self.put_mux_queue(self.stream.encode(frame))
         if self._frame_count <= 0:
             self._frame_count = self._restart_every
             self.put_mux_queue(self.stream.encode(None))
@@ -141,14 +139,15 @@ class CompactVideo(AsyncStream):
 
 
 class Transcoder:
-    def __init__(self, containers, infos):
+    def __init__(self, containers, infos, ignore_video_pts=False):
         assert len(containers) == len(infos)
         self.containers = containers
         self.infos = infos
         self.decoders = {}
         self._input_info = {'time_base': {'video': None, 'audio': None}, 'pts_offset': {'video': 0, 'audio': 0}}
         self.dummy_packet = {}
-        self.video_frame_pts = float("-inf")
+        self.ignore_video_pts = ignore_video_pts
+        self.video_frame_pts = None
 
     def init_with_template(self, template):
         """
@@ -201,7 +200,7 @@ class Transcoder:
                     'psy-rd':      '0.7:0.1',
                     'qcomp':       '0.75',
                     'x264-params': 'rc-lookahead=120',
-                    'threads':     '12',
+                    'threads':     '3',
                     'thread_type': 'frame'
                 }
                 out_v = container.add_stream('libx264', options=v_o, rate=t_v.framerate)
@@ -222,7 +221,7 @@ class Transcoder:
                 v_o = {
                     'preset':        '5',
                     'crf':           '50',
-                    'svtav1-params': 'tune=0:lp=10'
+                    'svtav1-params': 'tune=0:lp=6:pin=0'
                 }
                 out_v = container.add_stream('libsvtav1', options=v_o, rate=t_v.guessed_rate)
                 copy_format_info(t_v, out_v)
@@ -244,16 +243,22 @@ class Transcoder:
         processed = []
         for frame in frames:
             if frame_type == 'video':
-                if frame is not None:
-                    if frame.pts <= self.video_frame_pts:
-                        logging.warning("Decoder gives non monotonically increasing frame pts. Skipped")
-                        continue
+                if self.video_frame_pts is None:  # first frame
                     self.video_frame_pts = frame.pts
-                    frame.pict_type = 0
-                # TODO: remove the None placeholder if Lock is not needed
-                frame = [frame, None]
+                else:
+                    if self.ignore_video_pts:  # generate 60fps video starting from the first pts value
+                        self.video_frame_pts += int(1 / 60 / frame.time_base)
+                        frame.pts = self.video_frame_pts
+                    else:  # if not ignore, must ensure frame pts is monotonic before sent to the encoder
+                        if frame.pts <= self.video_frame_pts:
+                            logging.warning("Decoder gives non monotonically increasing frame pts. Skipped")
+                            continue
+                        self.video_frame_pts = frame.pts
+                # I/P/B frame should be decided by the encoder rather than the source
+                frame.pict_type = 0
             elif frame_type == 'audio':
                 if frame is not None:
+                    # the audio encoder will take care of the audio packet pts
                     frame.pts = None
             processed.append(frame)
         return processed
@@ -326,8 +331,8 @@ class Transcoder:
         frames = {}
         for s in ['video', 'audio']:
             frames[s] = self.decoders[s].decode(self.dummy_packet[s])
-            frames[s].append(None)  # to flush encoder
             frames[s] = self.process_frames(frames[s], s)
+            frames[s].append(None)  # to flush encoder
             self.decoders[s].close()
         for container, info in zip(self.containers, self.infos):
             if info['mode'] == 'compact':
@@ -358,11 +363,13 @@ class Transcoder:
             self.decoders[s].close()
 
 
-parser = argparse.ArgumentParser(description="encode video as H.264/AV1 and mux in mp4/webm [v230110.2untested]")
+parser = argparse.ArgumentParser(description="encode video as H.264/AV1 and mux in mp4/webm [v230401]")
 parser.add_argument('src', help="source directory for input videos")
 parser.add_argument('dst', help="destination directory for output videos")
 parser.add_argument('-t', '--type', metavar='O/H/C',
                     help='use letter(s) to control which file will be generated (default is all)')
+parser.add_argument('--ignore_video_pts', action='store_true',
+                    help="remove the input pts info and generate 60fps video (only affect re-encoded files H/C)")
 
 cli_args = parser.parse_args()
 in_dir = cli_args.src
@@ -371,6 +378,7 @@ if cli_args.type is None:
     out_type = 'OHC'
 else:
     out_type = [t for t in 'OHC' if t in cli_args.type.upper()]
+ignore_video_pts = cli_args.ignore_video_pts
 
 vid_names = os.listdir(in_dir)
 vid_names.sort(reverse=False)
@@ -382,7 +390,7 @@ if not vid_names:
     logging.warning(f"no output video. exiting")
     sys.exit(1)
 
-transcoder = Transcoder(out_list, out_info)
+transcoder = Transcoder(out_list, out_info, ignore_video_pts)
 
 if not vid_names:
     logging.error(f"no valid source video. exiting")
